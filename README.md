@@ -7,7 +7,7 @@ tensorflow [probably v2.5]
    choose mode "human_player", "ai_player_training" and "ai_player_watching"
 2. edit "tetromino.py" -> create_pool(cls): -> elif GAME_TYPE == 'extra':
     
-    add or delete tetromino. The format are:
+    add or delete tetromino.
 3. run "tetris_ai.py".
 
     training may take a significant amount of cpu usage.
