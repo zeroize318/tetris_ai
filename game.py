@@ -1,3 +1,5 @@
+import sys
+
 import pygame
 
 from lib import helper
@@ -70,6 +72,7 @@ class Gamestate:
         self.lines = 0
         self.pieces = 0
         self.idle = 0
+        self.combo = 0
 
     def start(self):
         self.tetromino = Tetromino.new_tetromino(self.next[0])
@@ -148,6 +151,7 @@ class Gamestate:
         state_copy.pieces = self.pieces
         state_copy.rand_count = self.rand_count
         state_copy.idle = self.idle
+        state_copy.combo = self.combo
 
         return state_copy
 
@@ -172,6 +176,7 @@ class Gamestate:
         self.pieces = state_original.pieces
         self.rand_count = state_original.rand_count
         self.idle = state_original.idle
+        self.combo = state_original.combo
 
     def put_tet_to_grid(self, tetro=None):
         grid_copy = helper.copy_2d(self.grid)
@@ -206,7 +211,7 @@ class Gamestate:
         return False
 
     def check_t_spin(self):
-        if self.tetromino.type_str != "T": return False
+        if self.tetromino.type_str != "T" or self.tetromino.rot != 2: return False
         check_mov = [(0, -1, 0),
                      (1, 0, 0),
                      (-1, 0, 0)]
@@ -247,7 +252,7 @@ class Gamestate:
                     return False
         return True
 
-    def update_score(self, lines, is_t_spin, is_clear):
+    def update_score(self, lines, is_t_spin, is_clear, combo):
         if is_t_spin:
             if lines == 1:
                 score_lines = 2
@@ -262,9 +267,9 @@ class Gamestate:
             score_lines = lines
 
         add_score = (score_lines + 1) * score_lines / 2 * 10
-        # add_score = lines * 10
-        # if is_clear:
-        #     add_score += 60
+
+        if is_clear:
+            add_score += 60
 
         if T_SPIN_MARK and is_t_spin:
             self.score = int(self.score) + add_score + 0.1
@@ -272,6 +277,16 @@ class Gamestate:
         else:
             self.score += add_score
         self.lines += lines
+
+        if add_score != 0:
+            if 1 < combo <= 3:
+                self.score += 10
+            elif 3 < combo <= 5:
+                self.score += 20
+            elif 5 < combo <= 8:
+                self.score += 30
+            elif combo > 8:
+                self.score += 40
 
         if lines != 0: self.n_lines[lines - 1] += 1
         self.pieces += 1
@@ -289,6 +304,7 @@ class Gamestate:
         for num in self.t_spins:
             one_line += f'{num} '
         s += "t_spins: " + one_line + '\n'
+        s += "combo: " + f'{self.combo}\n'
         return s
 
     def get_info_text(self):
@@ -314,7 +330,12 @@ class Gamestate:
         self.freeze()
         completed_lines = self.check_completed_lines(above_grid=above_grid)
         is_clear = self.check_clear_board()
-        add_score = self.update_score(completed_lines, is_t_spin, is_clear)
+        add_score = self.update_score(completed_lines, is_t_spin, is_clear, self.combo)
+        if add_score == 0:
+            self.combo = 0
+        else:
+            self.combo += 1
+
         if self.check_collision() or (is_above_grid and completed_lines == 0):
             self.game_status = "gameover"
             done = True
@@ -346,6 +367,20 @@ class Gamestate:
             return False
         else:
             return True
+
+    def check_equal(self, gamestate):
+        if self.is_hold_last != gamestate.is_hold_last or self.hold_type != gamestate.hold_type:
+            return False
+        if self.tetromino.type_str != gamestate.tetromino.type_str:
+            return False
+        for i in range(4):
+            if self.next[i] != gamestate.next[i]:
+                return False
+        for r in range(GAME_BOARD_HEIGHT):
+            for c in range(GAME_BOARD_WIDTH):
+                if self.grid[r][c] != gamestate.grid[r][c]:
+                    return False
+        return True
 
     @classmethod
     def cls_put_tet_to_grid(cls, grid, tetro):
@@ -565,7 +600,7 @@ class Game:
 
     def act(self, action):
         if self.current_state.game_status == "gameover":
-            return self.get_state_ac(), 0, True, False
+            return self.get_state_input(self.current_state), 0, True, False
 
         success = False
         done = False
@@ -619,7 +654,7 @@ class Game:
         else:
             self.current_state.idle += 1
 
-        return self.get_state_ac(), add_score, done, success
+        return self.get_state_input(self.current_state), add_score, done, success
 
     def render(self):
         if self.gui is not None:
@@ -709,39 +744,14 @@ class Game:
             self.restart()
         else:
             self.restart(height=height)
-        return self.get_state_ac()
-
-    # ac means actor critic
-    def get_state_ac(self):
-        return [self.get_main_grid_np_ac(), self.get_hold_next_np_ac()]
-
-    def get_main_grid_np_ac(self):
-        tet_to_grid = self.current_state.tetromino.to_main_grid()
-        buffer = []
-        for i in range(len(self.current_state.grid)):
-            for j in range(len(self.current_state.grid[i])):
-                buffer.append([self.current_state.grid[i][j]])
-                buffer.append([tet_to_grid[i][j]])
-
-        buffer = np.reshape(np.array(buffer), [1, GAME_BOARD_HEIGHT, GAME_BOARD_WIDTH, 2])
-        buffer = (buffer > 0) * 2 - 1
-        return buffer
-
-    def get_hold_next_np_ac(self):
-        buffer = Tetromino.to_small_window(self.current_state.hold_type)
-        for tetro_type in self.current_state.next:
-            for row in Tetromino.to_small_window(tetro_type):
-                buffer.append(row)
-        buffer = np.reshape(np.array(buffer), [1, 18, 4, 1])
-        buffer = (buffer > 0) * 2 - 1
-        return buffer
+        return self.get_state_input(self.current_state)
 
     def step(self, action=None, chosen=None):
         if action is not None:
             return self.act(action)
         elif chosen is not None:
             self.current_state = self.all_possible_states[chosen]
-            return self.get_state_dqn_conv2d(self.current_state)
+            return self.get_state_input(self.current_state)
         else:
             print('something is wrong with the args in step()')
             return None
@@ -753,11 +763,21 @@ class Game:
             return False
 
     @staticmethod
-    def get_state_dqn_conv2d(gamestate):
-        return Game.get_main_grid_np_dqn(gamestate), Game.get_hold_next_np_dqn(gamestate)
+    def get_state_input(gamestate):
+        if STATE_INPUT == 'long' or STATE_INPUT == 'short':
+            input_ = np.concatenate([np.reshape(Game.get_main_grid_input(gamestate), [1, -1]),
+                                     Game.get_height_hole_hold_next_input(gamestate)], axis=1)
+        elif STATE_INPUT == 'dense':
+            input_ = Game.get_height_hole_hold_next_input(gamestate)
+        else:
+            input_ = None
+            sys.stderr('STATE_INPUT is wrong. Exit...')
+            exit()
+
+        return input_
 
     @staticmethod
-    def get_main_grid_np_dqn(gamestate):
+    def get_main_grid_input(gamestate):
         buffer = []
         for i in range(len(gamestate.grid)):
             for j in range(len(gamestate.grid[i])):
@@ -773,12 +793,16 @@ class Game:
         return np.reshape(np.array(buffer), [1, GAME_BOARD_WIDTH * 2, 1])
 
     @staticmethod
-    def get_hold_next_np_dqn(gamestate):
+    def get_height_hole_hold_next_input(gamestate):
         # part1: heights + hold_depth. len -> 20
         if STATE_INPUT == 'short':
-            buffer1 = [sum(gamestate.get_heights())] + [sum(gamestate.get_hole_depth())]
+            buffer1 = [sum(gamestate.get_heights())] + [sum(gamestate.get_hole_depth())] + [gamestate.combo]
+        elif STATE_INPUT == 'long' or STATE_INPUT == 'dense':
+            buffer1 = gamestate.get_heights() + gamestate.get_hole_depth() + [gamestate.combo]
         else:
-            buffer1 = gamestate.get_heights() + gamestate.get_hole_depth()
+            buffer1 = None
+            sys.stdout.write('STATE_INPUT is wrong. Exit...')
+            exit()
 
         # part2: current 1; hold 1; next 4
         # next will always be the last for convenience, because of the change in the last one
@@ -810,6 +834,9 @@ class Game:
             gamestate_original = self.current_state.copy()
         else:
             gamestate_original = gamestate.copy()
+
+        if gamestate_original.game_status == 'gameover':
+            return [gamestate_original], [], [0], [True], [False], [False]
 
         states_lr_all = list()
         moves_lr_all = list()
@@ -858,19 +885,20 @@ class Game:
 
         return gamestates, moves, add_scores, dones, is_include_hold, is_new_hold
 
-    def get_all_possible_states_conv2d(self):
-        gamestates, moves, add_scores, dones, is_include_hold, is_new_hold = self.get_all_possible_gamestates(
-            self.current_state)
+    def get_all_possible_states_input(self, original_gamestate=None):
+        if original_gamestate is None:
+            gamestates, moves, add_scores, dones, is_include_hold, is_new_hold = self.get_all_possible_gamestates(
+                self.current_state)
+        else:
+            gamestates, moves, add_scores, dones, is_include_hold, is_new_hold = self.get_all_possible_gamestates(
+                original_gamestate)
 
-        mains = list()
-        hold_next = list()
+        state_input = list()
         for gamestate in gamestates:
-            in1, in2 = Game.get_state_dqn_conv2d(gamestate)
-            mains.append(in1)
-            hold_next.append(in2)
+            state_input.append(Game.get_state_input(gamestate))
 
-        return [np.concatenate(mains), np.concatenate(hold_next)], np.array([add_scores]).reshape(
-            [len(add_scores), 1]), dones, is_include_hold, is_new_hold, moves
+        return np.concatenate(state_input), np.array([add_scores]).reshape(
+            [-1, 1]), dones, is_include_hold, is_new_hold, moves, gamestates
 
     def display_all_possible_state(self):
         if self.gui is None: return
@@ -881,6 +909,18 @@ class Game:
             self.gui.set_info_text(helper.text_list_flatten(m))
             self.gui.redraw()
             time.sleep(0.1)
+
+    def get_moves(self, target_gamestate, current_gamestate=None):
+        if current_gamestate is None:
+            current_gamestate = self.current_state
+
+        all_possible_gamestates, moves, _, _, _, _ = self.get_all_possible_gamestates(current_gamestate)
+        for i in range(len(all_possible_gamestates)):
+            if target_gamestate.check_equal(all_possible_gamestates[i]):
+                return moves[i]
+
+        sys.stderr('WARNING: cannot find the moves from current gamestate to target gamestate.')
+        return []
 
 
 if __name__ == "__main__":
